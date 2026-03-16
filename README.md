@@ -21,5 +21,41 @@ The MCU and CPU are interconnected via several interfaces: SPI, I²C, and UART. 
 
 * Check the public task tracker: [MCU Firmware Project](https://github.com/orgs/flipperdevices/projects/8)
 
-* Read the documentation: [docs.flipper.net/one/tech-specs](https://docs.flipper.net/one/tech-specs)  
+* Read the documentation: [docs.flipper.net/one/tech-specs](https://docs.flipper.net/one/tech-specs)
   ⚠️ *Co-processor architecture documentation is coming soon (TODO).*
+
+## How to build
+
+### Prerequisites
+
+- [ARM GCC toolchain](https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases) (tested with 14.2.1)
+- CMake 3.13+
+- [Pico SDK 2.2.0](https://github.com/raspberrypi/pico-sdk)
+
+### Build steps
+
+```bash
+# Clone the repository with submodules
+git clone --recursive https://github.com/flipperdevices/flipperone-mcu-firmware.git
+cd flipperone-mcu-firmware
+
+# Download and set up Pico SDK
+git clone -b 2.2.0 https://github.com/raspberrypi/pico-sdk.git ../pico-sdk
+cd ../pico-sdk && git submodule update --init && cd ../flipperone-mcu-firmware
+
+# Configure and build
+mkdir -p build && cd build
+PICO_SDK_PATH=../../pico-sdk cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . --config Release --parallel $(nproc)
+```
+
+The output firmware file will be at `build/flipperone-mcu-firmware.uf2`.
+
+## How to update MCU firmware
+
+The firmware uses the [UF2](https://github.com/microsoft/uf2) format for the RP2350 microcontroller.
+
+1. Enter bootloader mode: hold the **BOOTSEL** button on the RP2350 while connecting USB
+2. A USB mass storage device will appear on your computer
+3. Copy the `.uf2` firmware file to the mass storage device
+4. The device will automatically reboot with the new firmware
