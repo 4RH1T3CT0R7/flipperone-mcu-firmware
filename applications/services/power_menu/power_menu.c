@@ -4,9 +4,11 @@
 #include <gui/clay_helper.h>
 #include <drivers/bq25792/bq25792.h>
 #include <led/led_batch.h>
+#include <power/power.h>
 
-#define TAG              "PowerMenu"
-#define POWER_MENU_ID(x) CLAY_SIDI(CLAY_STRING("PowerMenu"), x)
+#define TAG                          "PowerMenu"
+#define POWER_MENU_ID(x)             CLAY_SIDI(CLAY_STRING("PowerMenu"), x)
+#define POWER_MENU_UPDATE_INTERVAL_MS 1000
 
 typedef enum {
     PowerMenuActionLeds,
@@ -31,6 +33,7 @@ typedef struct {
     size_t selected_index;
     FuriString* backlight_text;
     const char* led_text;
+    FuriString* power_text;
 } PowerMenuModel;
 
 typedef struct {
@@ -38,6 +41,8 @@ typedef struct {
     View* view;
     FuriEventLoop* event_loop;
     Bq25792* bq25792;
+    Power* power;
+    FuriEventLoopTimer* power_timer;
     size_t selected_led_batch_index;
     size_t selected_backlight_index;
 } PowerMenu;
@@ -112,6 +117,19 @@ static bool power_menu_layout(void* _model) {
         }) {
             CLAY_TEXT(CLAY_STRING("Power"), CLAY_TEXT_CONFIG({.fontId = FontButton, .textColor = COLOR_BLACK}));
         }
+        if(furi_string_size(model->power_text) > 0) {
+            CLAY_AUTO_ID({
+                .layout =
+                    {
+                        .sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(11)},
+                        .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER},
+                    },
+            }) {
+                CLAY_TEXT(
+                    clay_helper_string_from(model->power_text),
+                    CLAY_TEXT_CONFIG({.fontId = FontBody, .textColor = COLOR_BLACK}));
+            }
+        }
         for(uint32_t i = 0; i < power_menu_items_count; i++) {
             bool selected = (i == model->selected_index);
             CLAY(
@@ -146,6 +164,7 @@ static bool power_menu_layout(void* _model) {
 
 static bool power_menu_model_init(PowerMenuModel* model, void* context) {
     model->backlight_text = furi_string_alloc();
+    model->power_text = furi_string_alloc();
     model->led_text = led_batch_names[0];
     return false;
 }
@@ -153,6 +172,8 @@ static bool power_menu_model_init(PowerMenuModel* model, void* context) {
 static bool power_menu_model_deinit(PowerMenuModel* model, void* context) {
     furi_string_free(model->backlight_text);
     model->backlight_text = NULL;
+    furi_string_free(model->power_text);
+    model->power_text = NULL;
     return false;
 }
 
@@ -165,6 +186,12 @@ static bool power_menu_model_set_backlight_text(PowerMenuModel* model, void* con
 static bool power_menu_model_set_led_text(PowerMenuModel* model, void* context) {
     size_t* led_batch_index = context;
     model->led_text = led_batch_names[*led_batch_index];
+    return true;
+}
+
+static bool power_menu_model_set_power_text(PowerMenuModel* model, void* context) {
+    FuriString* text = context;
+    furi_string_set(model->power_text, text);
     return true;
 }
 
@@ -200,6 +227,21 @@ static bool power_menu_input_menu_show(PowerMenuModel* model, void* context) {
 static bool power_menu_input_menu_hide(PowerMenuModel* model, void* context) {
     model->visible = false;
     return true;
+}
+
+static void power_menu_model_apply(PowerMenu* instance, bool (*callback)(PowerMenuModel* model, void* context), void* context);
+
+static void power_menu_power_timer_callback(void* context) {
+    furi_assert(context);
+    PowerMenu* instance = context;
+
+    float_t voltage = power_ina219_get_voltage_v(instance->power);
+    float_t current = power_ina219_get_current_a(instance->power);
+    float_t power = power_ina219_get_power_w(instance->power);
+
+    FuriString* text = furi_string_alloc_printf("%.1fV %.2fA %.2fW", (double)voltage, (double)current, (double)power);
+    power_menu_model_apply(instance, power_menu_model_set_power_text, text);
+    furi_string_free(text);
 }
 
 static void power_menu_model_apply(PowerMenu* instance, bool (*callback)(PowerMenuModel* model, void* context), void* context) {
@@ -280,6 +322,7 @@ static PowerMenu* power_menu_alloc(void) {
     PowerMenu* instance = malloc(sizeof(PowerMenu));
     instance->bq25792 = bq25792_init(&furi_hal_i2c_handle_main, BQ25792_ADDRESS, NULL);
     instance->gui = furi_record_open(RECORD_GUI);
+    instance->power = furi_record_open(RECORD_POWER);
     instance->event_loop = furi_event_loop_alloc();
 
     instance->view = view_alloc();
@@ -291,12 +334,22 @@ static PowerMenu* power_menu_alloc(void) {
     gui_add_view(instance->gui, instance->view, GuiViewPriorityMenu);
     instance->selected_backlight_index = 3; // 20%
     power_menu_apply_backlight(instance);
+
+    instance->power_timer = furi_event_loop_timer_alloc(
+        instance->event_loop,
+        power_menu_power_timer_callback,
+        FuriEventLoopTimerTypePeriodic,
+        instance);
+    furi_event_loop_timer_start(instance->power_timer, POWER_MENU_UPDATE_INTERVAL_MS);
+
     return instance;
 }
 
 static void power_menu_free(PowerMenu* instance) {
+    furi_event_loop_timer_free(instance->power_timer);
     gui_remove_view(instance->gui, instance->view);
     furi_record_close(RECORD_GUI);
+    furi_record_close(RECORD_POWER);
     power_menu_model_apply(instance, power_menu_model_deinit, NULL);
     view_free(instance->view);
     furi_event_loop_free(instance->event_loop);
